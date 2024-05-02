@@ -349,7 +349,7 @@ A family of tests are included under the `tests` directory. If you would like to
 
 First, make sure that all your LLM service provider configuration files are working properly. The configs will be mounted for the container to access. Also make sure that all the dependencies such as database and Milvus are ready. If not, you can run the included docker compose file to create those services.
 ```sh
-docker compose docker-compose.yml up -d --build
+docker compose -f docker-compose.yml up -d --build
 ```
 
 If you want to use Weights And Biases for logging the test results, your WandB API key needs to be set in an environment variable on the host machine.

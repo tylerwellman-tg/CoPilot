@@ -1,6 +1,6 @@
 import time
 from langchain.agents import AgentType, initialize_agent
-from typing import List, Union
+from typing import Dict, List, Union
 import logging
 
 from pyTigerGraph import TigerGraphConnection
@@ -72,7 +72,7 @@ class TigerGraphAgent:
         )
         logger.debug(f"request_id={req_id_cv.get()} agent initialized")
 
-    def question_for_agent(self, question: str):
+    def question_for_agent(self, question: str, conversation: List[Dict[str, str]] = None):
         """Question for Agent.
 
         Ask the agent a question to be answered by the database. Returns the agent resoposne or raises an exception.
@@ -89,7 +89,23 @@ class TigerGraphAgent:
             logger.debug_pii(
                 f"request_id={req_id_cv.get()} question_for_agent question={question}"
             )
-            resp = self.agent({"input": question})
+            input_data = {}
+            input_data["input"] = question
+            logger.info(f"conversation: {conversation}")
+            # import json
+
+            if conversation:
+            #     conversation_list = json.loads(conversation)
+
+                input_data["conversation"] = [{"query": chat["query"], "response": chat["response"]} for chat in conversation]
+            else:
+                # Handle the case where conversation is None or empty
+                input_data["conversation"] = []
+            # resp = self.agent({"input": question})
+            resp = self.agent({"input": str(input_data)})
+            logger.info(f"input_data: {input_data}")
+
+
             LogWriter.info(f"request_id={req_id_cv.get()} EXIT question_for_agent")
             return resp
         except Exception as e:

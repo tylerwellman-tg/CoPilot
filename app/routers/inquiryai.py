@@ -459,3 +459,160 @@ async def websocket_endpoint(websocket: WebSocket, graphname: str, session_id: s
             graphname, NaturalLanguageQuery(query=data), session.db_conn
         )
         await websocket.send_text(f"{res.natural_language_response}")
+
+conversation_history = []
+
+@router.post("/{graphname}/query_with_history")
+def retrieve_answer_with_chathistory(
+    graphname,
+    query: NaturalLanguageQuery,
+    conn: Request,
+    credentials: Annotated[HTTPBase, Depends(security)]
+) -> CoPilotResponse:
+    global conversation_history
+
+    conn = conn.state.conn
+    logger.debug_pii(
+        f"/{graphname}/query request_id={req_id_cv.get()} question={query.query}"
+    )
+    logger.debug(
+        f"/{graphname}/query request_id={req_id_cv.get()} database connection created"
+    )
+
+    if llm_config["completion_service"]["llm_service"].lower() == "openai":
+        logger.debug(
+            f"/{graphname}/query request_id={req_id_cv.get()} llm_service=openai agent created"
+        )
+        agent = TigerGraphAgent(
+            OpenAI(llm_config["completion_service"]),
+            conn,
+            embedding_service,
+            embedding_store,
+        )
+    elif llm_config["completion_service"]["llm_service"].lower() == "azure":
+        logger.debug(
+            f"/{graphname}/query request_id={req_id_cv.get()} llm_service=azure agent created"
+        )
+        agent = TigerGraphAgent(
+            AzureOpenAI(llm_config["completion_service"]),
+            conn,
+            embedding_service,
+            embedding_store,
+        )
+    elif llm_config["completion_service"]["llm_service"].lower() == "sagemaker":
+        logger.debug(
+            f"/{graphname}/query request_id={req_id_cv.get()} llm_service=sagemaker agent created"
+        )
+        agent = TigerGraphAgent(
+            AWS_SageMaker_Endpoint(llm_config["completion_service"]),
+            conn,
+            embedding_service,
+            embedding_store,
+        )
+    elif llm_config["completion_service"]["llm_service"].lower() == "vertexai":
+        logger.debug(
+            f"/{graphname}/query request_id={req_id_cv.get()} llm_service=vertexai agent created"
+        )
+        agent = TigerGraphAgent(
+            GoogleVertexAI(llm_config["completion_service"]),
+            conn,
+            embedding_service,
+            embedding_store,
+        )
+    elif llm_config["completion_service"]["llm_service"].lower() == "bedrock":
+        logger.debug(
+            f"/{graphname}/query request_id={req_id_cv.get()} llm_service=bedrock agent created"
+        )
+        agent = TigerGraphAgent(
+            AWSBedrock(llm_config["completion_service"]),
+            conn,
+            embedding_service,
+            embedding_store,
+        )
+    else:
+        LogWriter.error(
+            f"/{graphname}/query request_id={req_id_cv.get()} agent creation failed due to invalid llm_service"
+        )
+        raise Exception("LLM Completion Service Not Supported")
+
+    resp = CoPilotResponse(
+        natural_language_response="", answered_question=False, response_type="inquiryai"
+    )
+    steps = ""
+    try:
+        # Retrieve full conversation history
+        # full_history_query = " ".join([f"{interaction.get('query', '')} {interaction.get('response', '')}" for interaction in conversation_history])
+        full_history_query = [{"query": interaction.get("query", ""), "response": interaction.get("response", "")} for interaction in conversation_history]
+
+        logger.info(f"history: {full_history_query}")
+        steps = agent.question_for_agent(query.query, full_history_query)
+        logger.info(f"steps {steps}")
+        # try again if there were no steps taken
+        if len(steps["intermediate_steps"]) == 0:
+            steps = agent.question_for_agent(query.query)
+
+        logger.debug(f"/{graphname}/query request_id={req_id_cv.get()} agent executed")
+        generate_func_output = steps["intermediate_steps"][-1][-1]
+        resp.natural_language_response = steps["output"]
+        resp.query_sources = {
+            "function_call": generate_func_output["function_call"],
+            "result": json.loads(generate_func_output["result"]),
+            "reasoning": generate_func_output["reasoning"],
+        }
+        resp.answered_question = True
+        pmetrics.llm_success_response_total.labels(embedding_service.model_name).inc()
+
+        conversation_history.append({
+            "query": query.query,
+            "response": resp.natural_language_response
+        })
+    except MapQuestionToSchemaException:
+        resp.natural_language_response = (
+            "A schema mapping error occurred. Please try rephrasing your question."
+        )
+        resp.query_sources = {}
+        resp.answered_question = False
+        LogWriter.warning(
+            f"/{graphname}/query request_id={req_id_cv.get()} agent execution failed due to MapQuestionToSchemaException"
+        )
+        pmetrics.llm_query_error_total.labels(embedding_service.model_name).inc()
+        exc = traceback.format_exc()
+        logger.debug_pii(
+            f"/{graphname}/query request_id={req_id_cv.get()} Exception Trace:\n{exc}"
+        )
+        conversation_history.append({
+            "query": query.query,
+            "response": resp.natural_language_response
+        })
+    except Exception:
+        try:
+            # if the output is json, it's intermediate agent output
+            json.loads(str(steps["output"]))  # TODO: don't use errors as control flow
+            resp.natural_language_response = (
+                # "An error occurred while processing the response. Please try again."
+                "CoPilot had an issue answering your question. Please try again, or rephrase your prompt."
+            )
+            conversation_history.append({
+                "query": query.query,
+                "response": resp.natural_language_response
+            })
+        except:
+            # the output wasn't json. It was likely a message from the agent to the user
+            resp.natural_language_response = str(steps["output"])
+            # resp.natural_language_response = str(steps)
+            conversation_history.append({
+                "query": query.query,
+                "response": resp.natural_language_response
+            })
+        resp.query_sources = {} if len(steps) == 0 else {"agent_history": str(steps)}
+        resp.answered_question = False
+        LogWriter.warning(
+            f"/{graphname}/query request_id={req_id_cv.get()} agent execution failed due to unknown exception"
+        )
+        exc = traceback.format_exc()
+        logger.debug_pii(
+            f"/{graphname}/query request_id={req_id_cv.get()} Exception Trace:\n{exc}"
+        )
+        pmetrics.llm_query_error_total.labels(embedding_service.model_name).inc()
+
+    return resp

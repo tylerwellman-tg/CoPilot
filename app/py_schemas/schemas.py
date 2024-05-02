@@ -122,3 +122,22 @@ class QueryDeleteRequest(BaseModel):
 class QueryUpsertRequest(BaseModel):
     id: Optional[str]
     query_info: Optional[GSQLQueryInfo]
+
+
+# class Interaction(BaseModel):
+#     question: str
+#     response: Optional[str] = None
+
+
+# class ConversationHistory(BaseModel):
+#     history: List[Interaction] = []
+
+#     # def __init__(self):
+#     #     self.history = []
+
+#     def add_interaction(self, query, response=None):
+#         self.history.append(Interaction(question=query, response=response))
+
+#     def get_full_history_query(self):
+#         # Concatenate all queries in the history to form the full history query
+#         return [(item["question"], item["response"]) for item in self.history]
